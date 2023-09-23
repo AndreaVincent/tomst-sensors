@@ -1,0 +1,230 @@
+---
+title: "Ventisqueros code"
+author: "Andrea"
+date: "2023-09-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(myClim)
+library(ggplot2)
+```
+
+# OTC TMS Oct 2020- Jul 2023 dataset
+# Load and manage data
+```{r}
+setwd("~/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/tomst-sensors")
+
+# Read with metadata. check ?mc_read_data to make sure your files have the same column order they require
+ft <- read.table("/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/files_table_2020_2023_linux.csv", sep=",", header = T) #key: spreadsheet including filepaths of repeated sensor datasets with serial numbers in filename
+lt <- read.table("/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/localities_table.csv", sep=",", header = T)
+
+tms.a <- mc_read_data(files_table = ft,
+                      localities_table = lt,
+                      silent = T)
+#mc_info_count(tms.a) #Basic information about how many sensors etc. you have. 
+#mc_info(tms.a) #returns dataframe with summary per sensor
+names(tms.a)
+```
+
+## Change from solar time to UTC
+```{r}
+# This needs to happen before aggregating...but I need to do it before otherwise agg is wrong
+tms.b <- mc_prep_solar_tz(tms.a) # calculate solar time. I think it only works for aggregated data
+#mc_info(tms.b)
+#?mc_prep_meta_locality()
+#?mc_prep_solar_tz
+```
+
+## Join different datasets from the same sensor
+```{r}
+tms.all <- mc_join(tms.a)
+#mc_info_count(tms.all) # Check it worked
+#mc_info(tms.all)
+```
+
+## Summarize data on a per day basis
+```{r}
+tms.day <- mc_agg(tms.all, fun = "mean", period = "day", min_coverage=0.1)
+#mc_info(tms.day)
+```
+
+## Eyeball data through plotting
+```{r}
+tms.plot <- mc_filter(tms.all)
+p<-mc_plot_line(tms.plot, filename="files.pdf", sensors="TMS_TMSmoisture")
+p
+```
+
+## Convert raw counts (TDR) into VWC
+```{r}
+tms.vwc.uni<-mc_calc_vwc(tms.all, soiltype="universal") # Using universal equation
+#mc_info(tms.vwc.uni) #returns dataframe with summary per sensor
+```
+
+# Summarize 
+## Entire period
+### Aggregate
+```{r}
+# Aggregate: return one VWC value per sensor for the entire study period
+tms.logger.vwc<-mc_filter(tms.vwc.uni, sensor="VWC_moisture")
+tms.logger <- mc_agg(tms.logger.vwc, fun = "mean", period = "all", min_coverage = 0.95)
+#mc_info(tms.logger)
+r <- mc_reshape_long(tms.logger)
+#View(r) # Check that it worked
+write.csv(r, "/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/VWC_per_logger.csv", 
+          row.names = FALSE) 
+str(r)
+
+r$treat1<-regexpr("con", r$locality_id) ## Create a new column indicating treatment.If r$locality_id contains "con" return "-1. 
+View(r)
+r$Treatment <- ifelse(r$treat1==-1, "war","con") # Create a new column that says "war" when there's a -1 and con anytime else
+r$block<-substr(r$locality_id, 1, 1) # Create a new column with block
+```
+### Plot total VWC
+```{r}
+vwcAll <- ggplot(r, aes(x = block, y = value , fill = Treatment)) +
+  geom_boxplot(alpha=0.7) +
+  xlab("Block") + ylab("Volumetric soil moisture (%)") +  # label the x & y axes
+  ggtitle("Average soil moisture - All seasons\n 2020-2023") + # add a title
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, family = "Arial"),
+        text = element_text(size = 12, family = "Arial"), 
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        axis.text.x=element_text(size = 12)) +
+  scale_fill_manual(values = c("blue", "red"))
+vwcAll
+
+ggsave(filename="PlotMeanLoggerVWC.tiff", plot = vwcAll, device = "tiff",
+       path = NULL, scale = 1, width = 8, height = 10, units = "cm", 
+       limitsize = TRUE, bg = NULL,
+)
+
+model<-aov(r$value~r$treat*r$block) # Statistics
+summary(model)
+plot(model)
+```
+
+## Dry season
+### Aggregate 
+```{r}
+# Aggregate: return one VWC value per sensor for the dry season only 
+tms.logger.dry <- mc_agg(tms.logger.vwc, fun = "mean",
+                  percentiles = 95, period = "custom", min_coverage = 0.95, 
+                  custom_start="12-01", custom_end = "04-01")
+rdry <- mc_reshape_long(tms.logger.dry)
+#View(rdry) # Check that it worked
+write.csv(rdry, "/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/VWCperLoggerDrySeason.csv", 
+          row.names = FALSE) 
+
+# Create a new column indicating treatment
+rdry$treat1<-regexpr("con", rdry$locality_id) # if r$locality_id contains "con" return "-1. 
+#View(rdry)
+rdry$Treatment <- ifelse(rdry$treat1==-1, "war","con") # Create a new column that says "war" when there's a -1 and con anytime else
+
+rdry$block<-substr(rdry$locality_id, 1, 1) # Create a new column with block
+rdry$Year<-format(rdry$time_to, format="%Y") # Create a new column with year
+```
+
+### Plot dry season VWC
+```{r}
+vwcDry <- ggplot(rdry, aes(x = block, y = value , fill = Treatment)) +
+  geom_boxplot(alpha=0.7) +
+  xlab("Block") + ylab("Volumetric soil moisture (%)") +  # label the x & y axes
+  ggtitle("Average soil moisture - Dry season\n 2021-2023") + # add a title
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, family = "Arial"),
+        text = element_text(size = 12, family = "Arial"), 
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        axis.text.x=element_text(size = 12)) +
+  scale_fill_manual(values = c("blue", "red"))
+vwcDry
+
+ggsave(filename="PlotMeanLoggerVWCDry.tiff", plot = vwcDry, device = "tiff",
+       path = NULL, scale = 1, width = 12, height = 10, units = "cm", 
+       limitsize = TRUE, bg = NULL,
+)
+
+model<-aov(rdry$value~rdry$treat*rdry$block) # Statistics
+summary(model)
+plot(model)
+```
+
+## Wet season 
+### Aggregate
+```{r}
+# Aggregate: return one VWC value per sensor for the wet season only 
+tms.logger.wet <- mc_agg(tms.logger.vwc, fun = "mean",
+                         percentiles = 95, period = "custom", min_coverage = 0.95, 
+                         custom_start="04-02", custom_end = "11-30")
+rwet <- mc_reshape_long(tms.logger.wet)
+#View(rwet) # Check that it worked
+write.csv(rwet, "/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/VWCperLoggerWetSeason.csv", 
+          row.names = FALSE) 
+
+# Create a new column indicating treatment
+rwet$treat1<-regexpr("con", rwet$locality_id) # if r$locality_id contains "con" return "-1.
+#View(rwet)
+rwet$Treatment <- ifelse(rwet$treat1==-1, "war","con") # Create a new column that says "war" when there's a -1 and con anytime else
+
+rwet$block<-substr(rwet$locality_id, 1, 1) # Create a new column with block
+rwet$Year<-format(rwet$time_to, format="%Y") # Create a new column with year
+```
+
+### Plot wet season
+```{r}
+vwcWet <- ggplot(rwet, aes(x = block, y = value , fill = Treatment)) +
+  geom_boxplot(alpha=0.7) +
+  xlab("Block") + ylab("Volumetric soil moisture (%)") +  # label the x & y axes
+  ggtitle("Average soil moisture - Wet season\n 2020-2023") + # add a title
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, family = "Arial"),
+        text = element_text(size = 12, family = "Arial"), 
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        axis.text.x=element_text(size = 12)) +
+  scale_fill_manual(values = c("blue", "red"))
+vwcWet
+
+ggsave(filename="PlotMeanLoggerVWCWet.tiff", plot = vwcWet, device = "tiff",
+       path = NULL, scale = 1, width = 12, height = 10, units = "cm", 
+       limitsize = TRUE, bg = NULL,
+)
+getwd()
+
+# Statistics
+model<-aov(rwet$value~rwet$treat*rwet$block)
+summary(model)
+plot(model)
+
+```
+
+
+## Extract data from certain dates
+```{r echo = FALSE, eval = FALSE}
+# Extract data from Feb 2 and 3, 2022 only to compare with respiration data
+start <- as.POSIXct("2022-02-03")
+end <- as.POSIXct("2022-02-03")
+tms.feb3 <- mc_prep_crop(tms.v, start, end)
+#mc_info(tms.feb3)
+
+write.csv(t,"/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/raw_moisture_feb_2_2022.csv", 
+          row.names = FALSE)
+
+# Aggregate data for Feb 2 and 3 only to compare with gravimetric soil moisture
+tms.all.feb3<-mc_filter(tms.feb3, sensors=c("TMS_TMSmoisture"))
+#mc_info(tms.feb3)
+tms.all.feb3<- mc_agg(tms.all.feb3, fun = "mean", period = "all", 
+                       min_coverage = 0.95)
+t <- mc_reshape_long(tms.feb3)
+#View(t)
+write.csv(r,"/home/andrea/Dropbox/Chirripo/data/micromet data/datos TOMST sensors/2023-07-21 datos julio 2023/raw_moisture_feb_2_3_2022.csv", 
+          row.names = FALSE)
+```
+
